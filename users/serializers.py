@@ -1,71 +1,150 @@
+from django.contrib.auth.password_validation import validate_password
 from rest_framework import serializers, status
 from rest_framework.exceptions import ValidationError
-from django.db.models import Q
 
-from .models import CustomUser, VIA_EMAIL, VIA_PHONE, CodeVerify
-from shared.utility import check_email_or_phone
-from shared.utility import send_verification_email
+from .models import CustomUser, CODE_VERIFY, DONE
 
 
-class SignUpSerializer(serializers.ModelSerializer):
-    id = serializers.UUIDField(read_only=True)
-    auth_status = serializers.CharField(read_only=True)
-    auth_type = serializers.CharField(read_only=True)
+class RegisterSerializer(serializers.ModelSerializer):
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.fields['email_or_phone'] = serializers.CharField(write_only=True, required=True)
+    password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        validators=[validate_password],
+    )
+
+    password2 = serializers.CharField(write_only=True, label="Parolni tasdiqlang")
 
     class Meta:
         model = CustomUser
-        fields = ['id', 'auth_status', 'auth_type']
-
+        fields = ["id", "username", "email", "password", "password2"]
+        read_only_fields = ["id"]
 
     def validate(self, attrs):
-        email_or_phone = self.initial_data.get('email_or_phone')
-        if not email_or_phone:
-            raise ValidationError({'email_or_phone': 'Bu maydon majburiy.'})
 
-        already_exists = CustomUser.objects.filter(
-            Q(phone_number=email_or_phone) | Q(email=email_or_phone)
-        ).exists()
-        if already_exists:
-            raise ValidationError({'email_or_phone': 'Bu email yoki telefon bilan allaqachon ro\'yxatdan o\'tilgan.'})
+        if attrs["password"] != attrs["password2"]:
+            raise ValidationError({"password": "Parollar mos kelmadi."})
 
-        input_type = check_email_or_phone(email_or_phone)
-        if input_type == 'phone':
-            attrs['auth_type'] = VIA_PHONE
-            attrs['phone_number'] = email_or_phone
-        elif input_type == 'email':
-            attrs['auth_type'] = VIA_EMAIL
-            attrs['email'] = email_or_phone
-        else:
-            raise ValidationError({'email_or_phone': 'Email yoki telefon raqamingiz xato kiritilgan.'})
-
-
-        attrs.pop('email_or_phone', None)
         return attrs
 
-
     def create(self, validated_data):
-        user = super().create(validated_data)
 
-        if user.auth_type == VIA_EMAIL:
-            code = user.generate_code(VIA_EMAIL)
-            send_verification_email(user.email, code)
+        validated_data.pop("password2")
 
-        elif user.auth_type == VIA_PHONE:
-            code = user.generate_code(VIA_PHONE)
-        else:
-            raise ValidationError('auth_type aniqlanmadi.')
+        user = CustomUser.objects.create_user(**validated_data)
 
         return user
 
 
-    def to_representation(self, instance):
-        data = super().to_representation(instance)
-        tokens = instance.token()
-        data['message'] = 'Tasdiqlash kodi yuborildi.'
-        data['refresh'] = tokens['refresh']
-        data['access'] = tokens['access']
-        return data
+class UserProfileSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = CustomUser
+        fields = ["id", "username", "email", "bio", "avatar", "date_joined"]
+        read_only_fields = ["id", "date_joined"]
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+
+    old_password = serializers.CharField(write_only=True)
+
+    new_password = serializers.CharField(
+        write_only=True,
+        min_length=8,
+        validators=[validate_password],
+    )
+
+    new_password2 = serializers.CharField(write_only=True)
+
+    def validate_old_password(self, value):
+
+        user = self.context["request"].user
+
+        if not user.check_password(value):
+            raise ValidationError("Eski parol noto'g'ri.")
+
+        return value
+
+    def validate(self, attrs):
+
+        if attrs["new_password"] != attrs["new_password2"]:
+            raise ValidationError({"new_password": "Yangi parollar mos kelmadi."})
+
+        return attrs
+
+    def save(self, **kwargs):
+
+        user = self.context["request"].user
+
+        user.set_password(self.validated_data["new_password"])
+
+        user.save()
+
+        return user
+
+
+class UserChangeInfoSerializer(serializers.ModelSerializer):
+
+    first_name = serializers.CharField(required=True)
+    last_name = serializers.CharField(required=True)
+    username = serializers.CharField(required=True)
+
+    password = serializers.CharField(write_only=True)
+    confirm_password = serializers.CharField(write_only=True)
+
+    class Meta:
+        model = CustomUser
+        fields = [
+            "first_name",
+            "last_name",
+            "username",
+            "password",
+            "confirm_password",
+        ]
+
+    def validate(self, attrs):
+
+        if attrs["password"] != attrs["confirm_password"]:
+            raise ValidationError({"password": "Parollar mos kelmadi."})
+
+        return attrs
+
+    def validate_username(self, value):
+
+        if CustomUser.objects.filter(username=value).exists():
+            raise ValidationError("Bu username allaqachon mavjud.")
+
+        return value
+
+    def validate_first_name(self, value):
+
+        if len(value) < 2:
+            raise ValidationError("Ism juda qisqa.")
+
+        return value
+
+    def validate_last_name(self, value):
+
+        if len(value) < 2:
+            raise ValidationError("Familiya juda qisqa.")
+
+        return value
+
+    def update(self, instance, validated_data):
+
+        if instance.auth_status != CODE_VERIFY:
+            raise ValidationError(
+                {"message": "Siz hali tasdiqlanmagansiz", "status": status.HTTP_400_BAD_REQUEST}
+            )
+
+        instance.first_name = validated_data.get("first_name")
+        instance.last_name = validated_data.get("last_name")
+        instance.username = validated_data.get("username")
+
+        instance.set_password(validated_data.get("password"))
+
+        instance.auth_status = DONE
+
+        instance.save()
+
+        return instance
