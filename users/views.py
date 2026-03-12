@@ -11,7 +11,7 @@ from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.exceptions import ValidationError
-
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from .models import CustomUser, NEW, CODE_VERIFY, DONE, PHONE_DONE, VIA_EMAIL, VIA_PHONE
 from .serializers import RegisterSerializer, UserProfileSerializer, ChangePasswordSerializer
 
